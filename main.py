@@ -2,6 +2,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from streamdiffuser import stream_diffusion_frame
+
 # Mediapipe Hands Setup
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
@@ -9,6 +11,7 @@ hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
 
 def thermal_filter(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
     return cv2.applyColorMap(gray, cv2.COLORMAP_HOT)
 
 def grayscale_filter(frame):
@@ -44,14 +47,19 @@ def apply_filter_to_shape(frame, filter_type, polygon_points):
     polygon_points = np.array(polygon_points, dtype=np.int32)
     cv2.fillPoly(mask, [polygon_points], 255)
     
-    # Apply filter to the entire frame
-    filtered_frame = apply_filter(frame, filter_type)
-    
-    # Create result by combining original and filtered using mask
-    result = frame.copy()
-    result[mask == 255] = filtered_frame[mask == 255]
-    
-    return result
+    # Apply filter to the entire frame or use streamdiffusion for a special filter_type
+    if filter_type == 99:
+        # Only process the polygon area with streamdiffusion
+        roi = cv2.bitwise_and(frame, frame, mask=mask)
+        result_roi = stream_diffusion_frame(roi)
+        result = frame.copy()
+        result[mask == 255] = result_roi[mask == 255]
+        return result
+    else:
+        filtered_frame = apply_filter(frame, filter_type)
+        result = frame.copy()
+        result[mask == 255] = filtered_frame[mask == 255]
+        return result
 
 def get_thumb_index_points(hand_landmarks, w, h):
     """Get thumb tip and index finger tip points"""
@@ -85,36 +93,35 @@ def create_single_hand_polygon(hand_points, expansion_factor=50):
     # Distance between thumb and index
     distance = np.sqrt((thumb_tip[0] - index_tip[0])**2 + (thumb_tip[1] - index_tip[1])**2)
     
-    # Create a dynamic polygon based on finger distance
-    # When fingers are close, polygon is smaller; when far, polygon is larger
+    # Create a dynamic polygon using finger distance
+    # When fingers are close, smaller polygon; when far, larger polygon
     expansion = max(20, min(expansion_factor, distance * 0.5))
     
-    # Calculate center point
+    # Center point
     center_x = (thumb_tip[0] + index_tip[0]) // 2
     center_y = (thumb_tip[1] + index_tip[1]) // 2
     
-    # Create diamond/rhombus shape around the center
+    # Create rhombus shape around the center
     polygon_points = [
-        (center_x, center_y - int(expansion)),  # Top
-        (center_x + int(expansion * 0.8), center_y),  # Right
-        (center_x, center_y + int(expansion)),  # Bottom
-        (center_x - int(expansion * 0.8), center_y)   # Left
+        (center_x, center_y - int(expansion)),  #Top
+        (center_x + int(expansion * 0.8), center_y),  #Right
+        (center_x, center_y + int(expansion)),  #Bottom
+        (center_x - int(expansion * 0.8), center_y)   #Left
     ]
     
     return polygon_points
 
 def check_button_hover(finger_pos, button_positions):
-    """Check if finger is hovering over any button"""
     for i, (bx, by) in enumerate(button_positions):
         if bx-30 < finger_pos[0] < bx+30 and by-30 < finger_pos[1] < by+30:
             return i + 1  # Return filter number (1-5)
     return None
 
 # Button positions
-filters = ["diffusion", "paint"]
+filters = ["diffusion", "retro"]
 button_positions = [(175 + i*165, 440) for i in range(2)]
 
-selected_filter = 1  # Start with filter 1
+selected_filter = 1  #Start with filter 1
 apply_mode = False
 polygon_points = None
 hand1_points = None
@@ -215,20 +222,20 @@ while cap.isOpened():
                            (track_x1 + 20, track_y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
     # Combine main frame with tracking area
-    combined_frame = np.vstack([display_frame, tracking_area])
+    merge_frame = np.vstack([display_frame, tracking_area])
     
     # Add status text
     hands_count = len(detected_hands) if detected_hands else 0
     status_text = f"Filter {selected_filter} - {'Active' if apply_mode else 'Inactive'} - Hands: {hands_count}"
-    cv2.putText(combined_frame, status_text, (10, h + 30), 
+    cv2.putText(merge_frame, status_text, (10, h + 30), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
     if apply_mode and polygon_points:
         if len(detected_hands) == 2:
-            cv2.putText(combined_frame, "Two-hand filter active", (10, h + 60), 
+            cv2.putText(merge_frame, "Two-hand filter active", (10, h + 60), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    cv2.imshow("Filter box", combined_frame)
+    cv2.imshow("Filter box", merge_frame)
     
     # Handle key presses
     key = cv2.waitKey(1) & 0xFF
